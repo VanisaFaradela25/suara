@@ -1,0 +1,12 @@
+jupyter-book
+matplotlib
+numpy
+streamlit
+pandas
+scikit-learn
+librosa
+joblib
+resemblyzer
+webrtcvad
+pydub
+ffmpeg-python
