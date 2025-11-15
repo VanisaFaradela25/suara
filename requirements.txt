@@ -3,7 +3,8 @@ numpy
 pandas
 matplotlib
 scikit-learn
-librosa
 joblib
 soundfile
-s
+librosa==0.10.1.post2
+numba
+resampy
