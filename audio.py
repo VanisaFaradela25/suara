@@ -2,82 +2,48 @@ import streamlit as st
 import numpy as np
 import librosa
 import os
-from sklearn.metrics.pairwise import cosine_similarity
-from pydub import AudioSegment
-import io
+import shutil
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+import joblib
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # ===================================================
 # CONFIG
 # ===================================================
-st.set_page_config(
-    page_title="Deteksi Suara Buka/Tutup",
-    page_icon="🎙️",
-    layout="centered"
-)
+st.set_page_config(page_title="Deteksi Suara Buka/Tutup", page_icon="🎙️", layout="centered")
 
 # ===================================================
-# CSS
+# PATHS
 # ===================================================
-st.markdown("""
-<style>
-body { background-color: #f3f6fd; }
+base_dir = "PSD-audio-wav"
+train_dir = "data_split/train"
+test_dir = "data_split/test"
+model_dir = "model_files"
+os.makedirs(model_dir, exist_ok=True)
+os.makedirs(train_dir, exist_ok=True)
+os.makedirs(test_dir, exist_ok=True)
 
-.title-box {
-    background: linear-gradient(135deg, #6c92ff, #4b7bec);
-    padding: 25px;
-    border-radius: 15px;
-    color: white;
-    text-align: center;
-    margin-bottom: 25px;
-    box-shadow: 0px 4px 12px rgba(0,0,0,0.15);
-}
+model_path = os.path.join(model_dir, "rf_speaker.pkl")
+scaler_path = os.path.join(model_dir, "scaler.pkl")
 
-.section-card {
-    background-color: #ffffff;
-    padding: 20px;
-    border-radius: 14px;
-    border: 1px solid #e3e7ff;
-    box-shadow: 0px 3px 8px rgba(0,0,0,0.07);
-    margin-bottom: 20px;
-}
-
-.result-good {
-    background-color: #d6ffe7;
-    border-left: 8px solid #00a35c;
-    padding: 18px;
-    border-radius: 10px;
-    color: #006b3c;
-    font-size: 20px;
-    font-weight: bold;
-    text-align: center;
-}
-
-.result-bad {
-    background-color: #ffe3e3;
-    border-left: 8px solid #cc0000;
-    padding: 18px;
-    border-radius: 10px;
-    color: #a30000;
-    font-size: 20px;
-    font-weight: bold;
-    text-align: center;
-}
-
-.radio-label {
-    font-size: 18px;
-    color: #4b7bec;
-    font-weight: bold;
-    margin-bottom: 8px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<div class="title-box">
-    <h1>🎙️ Deteksi Suara: Buka / Tutup</h1>
-    <p>Mengenali dua speaker dan mendeteksi kata buka atau tutup</p>
-</div>
-""", unsafe_allow_html=True)
+# ===================================================
+# SPLIT DATA TRAIN / TEST
+# ===================================================
+if os.path.exists(base_dir):
+    categories = [c for c in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, c))]
+    for category in categories:
+        files = [f for f in os.listdir(os.path.join(base_dir, category)) if f.endswith(".wav")]
+        if len(files) >= 2:
+            train_files, test_files = train_test_split(files, test_size=0.3, random_state=42)
+            os.makedirs(os.path.join(train_dir, category), exist_ok=True)
+            os.makedirs(os.path.join(test_dir, category), exist_ok=True)
+            for f in train_files:
+                shutil.copy(os.path.join(base_dir, category, f), os.path.join(train_dir, category, f))
+            for f in test_files:
+                shutil.copy(os.path.join(base_dir, category, f), os.path.join(test_dir, category, f))
 
 # ===================================================
 # FEATURE EXTRACTION
@@ -90,144 +56,126 @@ def extract_features(path):
     centroid = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
     pitches, mags = librosa.piptrack(y=y, sr=sr)
     pitch_value = float(np.max(pitches))
-    return {
-        "mfcc": np.mean(mfcc.T, axis=0),
-        "zcr": float(zcr),
-        "energy": float(energy),
-        "centroid": float(centroid),
+    feature_vector = np.concatenate([np.mean(mfcc.T, axis=0), [zcr, energy, centroid, pitch_value]])
+    feats_dict = {
+        "mfcc": np.mean(mfcc.T, axis=0).tolist(),
+        "zcr": zcr,
+        "energy": energy,
+        "centroid": centroid,
         "pitch": pitch_value
     }
+    return feature_vector, feats_dict
 
 # ===================================================
-# BUILD SPEAKER PROFILE (Aman untuk Streamlit Cloud)
+# TRAIN MODEL
 # ===================================================
-def build_speaker_profile(folder):
-    embeddings = []
-
-    if not os.path.exists(folder):
-        st.warning(f"⚠️ Folder '{folder}' tidak ditemukan. Profil diabaikan sementara.")
-        return None
-
-    for file in os.listdir(folder):
-        if file.lower().endswith(".wav"):
-            try:
-                feats = extract_features(os.path.join(folder, file))
-                mfcc = feats["mfcc"]
-                mfcc = (mfcc - np.mean(mfcc)) / (np.std(mfcc) + 1e-9)
-                embeddings.append(mfcc)
-            except Exception as e:
-                st.warning(f"Gagal memproses {file}: {e}")
-
-    if not embeddings:
-        st.warning(f"⚠️ Folder '{folder}' kosong atau tidak berisi file .wav yang valid.")
-        return None
-
-    return np.mean(embeddings, axis=0)
-
-# ===================================================
-# SETUP SPEAKER FOLDER
-# ===================================================
-speaker1_folder = "PSD-audio-wav/Suara1"
-speaker2_folder = "PSD-audio-wav/Suara2"
-
-speaker1_profile = build_speaker_profile(speaker1_folder)
-speaker2_profile = build_speaker_profile(speaker2_folder)
-
-# Jika folder belum ada
-if speaker1_profile is None or speaker2_profile is None:
-    st.error("❌ Folder referensi suara belum ditemukan. Upload folder PSD-audio-wav/Suara1 dan Suara2 ke repo kamu agar fitur aktif.")
-    st.stop()
+def train_model():
+    X, y_labels = [], []
+    for cat in categories:
+        folder = os.path.join(train_dir, cat)
+        if not os.path.exists(folder):
+            continue
+        for file in os.listdir(folder):
+            if file.endswith(".wav"):
+                feat_vec, _ = extract_features(os.path.join(folder, file))
+                X.append(feat_vec)
+                y_labels.append(cat)
+    if X:
+        X = np.array(X)
+        y_labels = np.array(y_labels)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        clf = RandomForestClassifier(n_estimators=100, random_state=42)
+        clf.fit(X_scaled, y_labels)
+        joblib.dump(clf, model_path)
+        joblib.dump(scaler, scaler_path)
+        return clf, scaler
+    else:
+        st.error("Folder train kosong, tidak ada data untuk training.")
+        st.stop()
 
 # ===================================================
-# IDENTIFY SPEAKER
+# LOAD MODEL & SCALER ATAU TRAIN
 # ===================================================
-def identify_speaker(mfcc):
-    mfcc = (mfcc - np.mean(mfcc)) / (np.std(mfcc) + 1e-9)
-    sim1 = cosine_similarity([mfcc], [speaker1_profile])[0][0]
-    sim2 = cosine_similarity([mfcc], [speaker2_profile])[0][0]
-    speaker = "speaker1" if sim1 > sim2 else "speaker2"
-    return speaker, sim1, sim2
+if os.path.exists(model_path) and os.path.exists(scaler_path):
+    clf = joblib.load(model_path)
+    scaler = joblib.load(scaler_path)
+else:
+    clf, scaler = train_model()
 
 # ===================================================
-# DETECT WORD
+# BUAT LIST VALID FILE
 # ===================================================
-def detect_word(feats):
-    if feats["energy"] > 0.010 or feats["pitch"] > 150:
-        return "buka"
-    return "tutup"
+valid_files = []
+for folder in [train_dir, test_dir]:
+    for cat in categories:
+        cat_folder = os.path.join(folder, cat)
+        if os.path.exists(cat_folder):
+            for f in os.listdir(cat_folder):
+                if f.endswith(".wav"):
+                    valid_files.append(f)
 
 # ===================================================
-# INPUT UI
+# CSS & HEADER
+# ===================================================
+st.markdown("""
+<style>
+body { background-color: #f3f6fd; }
+.title-box { background: linear-gradient(135deg, #6c92ff, #4b7bec); padding: 25px; border-radius: 15px; color: white; text-align: center; margin-bottom: 25px; box-shadow: 0px 4px 12px rgba(0,0,0,0.15);}
+.section-card { background-color: #ffffff; padding: 20px; border-radius: 14px; border: 1px solid #e3e7ff; box-shadow: 0px 3px 8px rgba(0,0,0,0.07); margin-bottom: 20px;}
+.result-good { background-color: #d6ffe7; border-left: 8px solid #00a35c; padding: 18px; border-radius: 10px; color: #006b3c; font-size: 20px; font-weight: bold; text-align: center;}
+.result-bad { background-color: #ffe3e3; border-left: 8px solid #cc0000; padding: 18px; border-radius: 10px; color: #a30000; font-size: 20px; font-weight: bold; text-align: center;}
+.radio-label { font-size: 18px; color: #4b7bec; font-weight: bold; margin-bottom: 8px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="title-box">
+    <h1>🎙️ Deteksi Suara: Buka / Tutup</h1>
+    <p>Mengenali dua speaker dan mendeteksi kata buka atau tutup</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ===================================================
+# UPLOAD & DETEKSI
 # ===================================================
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<p class="radio-label">🎧 Pilih Metode Input</p>', unsafe_allow_html=True)
-mode = st.radio("", ["Upload File", "Rekam Mic"])
+st.markdown('<p class="radio-label">🎧 Upload File WAV</p>', unsafe_allow_html=True)
+uploaded = st.file_uploader("", type=["wav"])
+detect_btn = st.button("🔍 DETEKSI SEKARANG")
 st.markdown('</div>', unsafe_allow_html=True)
 
-audio_path = None
-audio_name = None
+if uploaded and detect_btn:
+    audio_name = uploaded.name
 
-# ===================================================
-# UPLOAD FILE
-# ===================================================
-if mode == "Upload File":
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    uploaded = st.file_uploader("Upload file WAV", type=["wav"])
-    if uploaded:
-        audio_path = "temp_uploaded.wav"
-        audio_name = uploaded.name
-        with open(audio_path, "wb") as f:
-            f.write(uploaded.read())
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ===================================================
-# REKAM MIC
-# ===================================================
-else:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    audio_bytes = st.audio_input("Klik tombol untuk merekam:")
-    if audio_bytes:
-        audio_name = "rekaman.wav"
-        try:
-            audio_file = io.BytesIO(audio_bytes.read())
-            sound = AudioSegment.from_file(audio_file, format="webm")
-            audio_path = "temp_mic.wav"
-            sound.export(audio_path, format="wav")
-        except Exception as e:
-            audio_path = None
-            st.markdown('<div class="result-bad">❌ Suara tidak dikenali</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ===================================================
-# DETEKSI
-# ===================================================
-if st.button("🔍 DETEKSI SEKARANG", use_container_width=True):
-    if audio_path is None:
+    # Cek apakah file termasuk dataset
+    if audio_name not in valid_files:
         st.markdown('<div class="result-bad">❌ Suara tidak dikenali</div>', unsafe_allow_html=True)
     else:
-        # 🔒 Pastikan hanya suara dari folder referensi yang dikenali
-        allowed_files = []
-        for fldr in [speaker1_folder, speaker2_folder]:
-            if os.path.exists(fldr):
-                for f in os.listdir(fldr):
-                    if f.endswith(".wav"):
-                        allowed_files.append(f)
+        audio_path = "temp_uploaded.wav"
+        with open(audio_path, "wb") as f:
+            f.write(uploaded.read())
 
-        if audio_name not in allowed_files:
-            st.markdown('<div class="result-bad">❌ Suara tidak dikenali (tidak termasuk dataset referensi)</div>', unsafe_allow_html=True)
-        else:
-            feats = extract_features(audio_path)
-            speaker, sim1, sim2 = identify_speaker(feats["mfcc"])
-            word = detect_word(feats)
+        feat_vec, feats_dict = extract_features(audio_path)
+        feat_vec_scaled = scaler.transform([feat_vec])
+        speaker_pred = clf.predict(feat_vec_scaled)[0]
 
-            st.info(f"Similarity → Speaker1: {sim1:.4f} | Speaker2: {sim2:.4f}")
-            st.markdown(f'<div class="result-good">✅ {speaker} mengatakan: {word}</div>', unsafe_allow_html=True)
+        # DETEKSI KATA BUKA/TUTUP
+        word = "buka" if feats_dict["energy"] > 0.010 or feats_dict["pitch"] > 150 else "tutup"
 
-            st.markdown("### 📊 Fitur Statistik Audio")
-            st.json({
-                "Energy": feats["energy"],
-                "Zero Crossing Rate": feats["zcr"],
-                "Spectral Centroid": feats["centroid"],
-                "Pitch": feats["pitch"],
-                "MFCC": feats["mfcc"].tolist()
-            })
+        st.info(f"✅ Speaker terdeteksi: {speaker_pred}")
+        st.markdown(f'<div class="result-good">✅ {speaker_pred} mengatakan: {word}</div>', unsafe_allow_html=True)
+
+        # Statistik Fitur Audio → Line Chart
+        st.markdown("### 📊 Statistik Fitur Audio")
+        stats_df = pd.DataFrame({
+            "Feature": ["Energy", "Zero Crossing Rate", "Spectral Centroid", "Pitch"],
+            "Value": [feats_dict["energy"], feats_dict["zcr"], feats_dict["centroid"], feats_dict["pitch"]]
+        })
+        fig, ax = plt.subplots()
+        ax.plot(stats_df["Feature"], stats_df["Value"], marker='o', linestyle='-', color='#4b7bec')
+        ax.set_ylabel("Nilai")
+        ax.set_title("Line Chart Statistik Audio")
+        st.pyplot(fig)
+
+        st.json(feats_dict)

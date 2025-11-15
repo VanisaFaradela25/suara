@@ -10,3 +10,7 @@ resemblyzer
 webrtcvad
 pydub
 ffmpeg-python
+shutil
+StandardScaler
+RandomForestClassifier
+os
