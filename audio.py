@@ -22,9 +22,10 @@ base_dir = "PSD-audio-wav"
 train_dir = "data_split/train"
 test_dir = "data_split/test"
 model_dir = "model_files"
-os.makedirs(model_dir, exist_ok=True)
-os.makedirs(train_dir, exist_ok=True)
-os.makedirs(test_dir, exist_ok=True)
+
+# Buat folder kalau belum ada (penting untuk deploy)
+for d in [base_dir, train_dir, test_dir, model_dir]:
+    os.makedirs(d, exist_ok=True)
 
 model_path = os.path.join(model_dir, "rf_speaker.pkl")
 scaler_path = os.path.join(model_dir, "scaler.pkl")
